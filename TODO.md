@@ -147,7 +147,7 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
       missing zones or bad policy. ✓ round-trips the example schema above.
 - [x] **A2 · snapshot.py** — walk the tree (skip `.undhd/`), build manifest per schema; hash only
       files < 50 MB; `save/load` manifest.json. ✓ snapshotting twice with no changes is identical.
-- [ ] **A3 · diffs.py** — diff two manifests → `added / removed / modified` lists, aggregated per
+- [x] **A3 · diffs.py** — diff two manifests → `added / removed / modified` lists, aggregated per
       zone (input / scripts / output / other). ✓ detects each change type in a toy tree.
 - [ ] **A4 · history.py** — render a diff + cleanup report into `history/YYYY-MM-DD.md`; second
       run same day appends a new section; special "Day 0 — initialized" entry for setup.
