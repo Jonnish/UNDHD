@@ -9,7 +9,7 @@ SKILL_DEST="$HOME/.claude/skills/undhd"
 UNDHD_PY="$SCRIPT_DIR/skill/scripts/undhd.py"
 
 usage() {
-  echo "Usage: $0 [--cron --root DIR]" >&2
+  echo "Usage: $0 [--cron DIR]" >&2
   exit 1
 }
 
@@ -17,8 +17,16 @@ CRON=0
 ROOT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --cron) CRON=1; shift ;;
-    --root) ROOT="${2:-}"; shift 2 ;;
+    --cron)
+      CRON=1
+      shift
+      if [[ $# -eq 0 || "$1" == --* ]]; then
+        echo "error: --cron requires a path to the managed directory" >&2
+        usage
+      fi
+      ROOT="$1"
+      shift
+      ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
   esac
@@ -37,8 +45,18 @@ else
 fi
 
 if [[ "$CRON" -eq 1 ]]; then
-  if [[ -z "$ROOT" ]]; then
-    echo "error: --cron requires --root DIR" >&2
+  if ! command -v crontab >/dev/null 2>&1; then
+    cat >&2 <<MSG
+error: 'crontab' isn't available on this system, so automatic scheduling can't be installed
+here. This is expected on native Windows (outside WSL), which has no cron daemon. Options:
+  - Run this installer from WSL (Windows Subsystem for Linux) instead — it has crontab.
+  - Add a Windows Task Scheduler entry yourself, e.g.:
+      schtasks /create /sc daily /st 07:00 /tn undhd-maintain ^
+        /tr "python $UNDHD_PY maintain --root $ROOT"
+  - Skip scheduling and run 'undhd.py maintain --root $ROOT' manually, or from any
+    scheduler you already use.
+The skill symlink above was still installed; only the cron entry was skipped.
+MSG
     exit 1
   fi
   ROOT_ABS="$(cd "$ROOT" && pwd)"

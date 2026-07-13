@@ -48,10 +48,12 @@ On success, show the printed summary (zones, baseline file count/size, config + 
 Then offer to install a daily cron entry:
 
 ```
-install.sh --cron --root <R>
+install.sh --cron <R>
 ```
 
-Only run `install.sh` after the user says yes — it edits their crontab.
+Only run `install.sh` after the user says yes — it edits their crontab. On systems without
+`crontab` (native Windows outside WSL), this exits with a clear message instead of installing
+anything — relay that message to the user rather than retrying or working around it yourself.
 
 ## Day-to-day commands
 

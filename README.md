@@ -47,6 +47,12 @@ Claude Code. To install daily maintenance for an already managed directory:
 ./install.sh --cron /absolute/path/to/managed-project
 ```
 
+This appends a daily `0 7 * * *` crontab entry (idempotent — re-running the command never
+duplicates it). **Windows:** native Windows has no cron daemon, so `--cron` requires WSL (Windows
+Subsystem for Linux); running it outside WSL prints instructions for adding a Windows Task
+Scheduler entry instead, rather than failing silently. The skill symlink step above always
+succeeds regardless of platform.
+
 You can also run the CLI directly without installing the skill:
 
 ```bash
