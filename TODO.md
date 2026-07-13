@@ -59,6 +59,7 @@ undhd/
 │           ├── diffs.py     # manifest diff → added/removed/modified per zone
 │           ├── history.py   # render + read daily history entries
 │           ├── checks.py    # warning checks: large files, input-zone changes, strays
+│           ├── maintenance.py # daily orchestrator: snapshot → diff → cleanup → history
 │           ├── cleanup.py   # trash / archive / rotate / purge
 │           └── gitsync.py   # detect code changes; commit + push after user OK
 ├── tests/                   # pytest, tmp_path-based
@@ -155,7 +156,7 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
       ✓ file is valid markdown with per-zone tables.
 - [x] **A5 · warnings** — flag in the history entry: new files > `large_file_warn_mb`, any change
       inside an input zone, stray files in the workdir root. ✓ each fires in a crafted tree.
-- [ ] **A6 · maintenance orchestrator** — `run_maintenance(root, dry_run)` in lib: snapshot →
+- [x] **A6 · maintenance orchestrator** — `run_maintenance(root, dry_run)` in lib: snapshot →
       diff → cleanup (C's module) → history entry → save new manifest. Depends on A1–A4 + C1.
       ✓ two consecutive runs on the demo tree produce sane day-1/day-2 entries.
 - [ ] **A7 · pending code-sync state** — in the orchestrator: when the diff shows scripts-zone
