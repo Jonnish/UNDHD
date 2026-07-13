@@ -149,7 +149,7 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
       files < 50 MB; `save/load` manifest.json. ✓ snapshotting twice with no changes is identical.
 - [x] **A3 · diffs.py** — diff two manifests → `added / removed / modified` lists, aggregated per
       zone (input / scripts / output / other). ✓ detects each change type in a toy tree.
-- [ ] **A4 · history.py** — render a diff + cleanup report into `history/YYYY-MM-DD.md`; second
+- [x] **A4 · history.py** — render a diff + cleanup report into `history/YYYY-MM-DD.md`; second
       run same day appends a new section; special "Day 0 — initialized" entry for setup.
       ✓ file is valid markdown with per-zone tables.
 - [ ] **A5 · warnings** — flag in the history entry: new files > `large_file_warn_mb`, any change
