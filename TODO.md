@@ -24,7 +24,9 @@ changed last Tuesday. unDHD manages a directory in two stages:
   - appends a dated entry to the **daily history log** (added / removed / modified files per
     zone, sizes, warnings),
   - performs **cleanup**: temp files → trash, old logs gzipped, stale outputs archived,
-    trash purged after a grace period.
+    trash purged after a grace period,
+  - detects **code changes** in the scripts zone and — **after an explicit OK from the user** —
+    commits and pushes them to the workdir's git remote (see "Code sync" in §2).
 
 **Safety rules (non-negotiable):**
 - Nothing is ever hard-deleted: cleanup moves files to `.undhd/trash/<date>/`, purged only
@@ -32,6 +34,9 @@ changed last Tuesday. unDHD manages a directory in two stages:
 - `--dry-run` supported everywhere; input and scripts zones are never modified (except
   universal temp patterns like `.DS_Store`).
 - Every action taken is recorded in that day's history entry.
+- Git pushes are never automatic: a headless (cron) run only *records* pending code changes;
+  the commit+push happens only after the user gives an OK in an interactive session
+  (`sync_code: "auto"` is an explicit per-directory opt-in).
 
 ---
 
@@ -53,7 +58,8 @@ undhd/
 │           ├── snapshot.py  # walk tree → manifest
 │           ├── diffs.py     # manifest diff → added/removed/modified per zone
 │           ├── history.py   # render daily history entries + warnings
-│           └── cleanup.py   # trash / archive / rotate / purge
+│           ├── cleanup.py   # trash / archive / rotate / purge
+│           └── gitsync.py   # detect code changes; commit + push after user OK
 ├── tests/                   # pytest, tmp_path-based
 └── demo/
     └── make_demo.sh         # generates a fake bioinformatics workdir for the demo
@@ -91,9 +97,13 @@ Python 3 **stdlib only** (json, pathlib, hashlib, shutil, argparse, gzip) — no
     "archive_output_after_days": 14,
     "trash_retention_days": 7,
     "large_file_warn_mb": 1024
-  }
+  },
+  "git": { "sync_code": "ask", "remote": "origin" }
 }
 ```
+
+`git.sync_code`: `"ask"` (default — record pending changes, push only after user OK) ·
+`"auto"` (push without asking, explicit opt-in) · `"off"`.
 
 `manifest.json` (`sha256` is `null` for files ≥ 50 MB — genomics files are huge; size+mtime suffice):
 ```json
@@ -109,7 +119,19 @@ undhd.py setup    --root R --input D [--input D2] --scripts D --output D --work 
 undhd.py maintain --root R [--dry-run]
 undhd.py status   --root R
 undhd.py history  --root R [--days N]
+undhd.py sync-code --root R [--dry-run] [--yes]
 ```
+
+### Code sync (git-aware maintenance)
+
+When the manifest diff shows changes inside the **scripts zone**, maintenance checks whether that
+zone lives in a git repo (`git -C <scripts> rev-parse`). A headless run never pushes — it records a
+**pending code sync** block (the changed files) in the history entry and in the `status` payload.
+The next time the user interacts with the skill, Claude shows the pending changes and asks for an
+explicit OK (AskUserQuestion); on approval it runs `sync-code --yes`, which commits only
+scripts-zone paths with a generated message (e.g. `unDHD daily sync: 2 scripts modified (align.sh,
+qc.py)`) and pushes to `git.remote`. No repo, no remote, or `sync_code: "off"` → the feature is
+silently inert.
 
 ---
 
@@ -135,6 +157,11 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
 - [ ] **A6 · maintenance orchestrator** — `run_maintenance(root, dry_run)` in lib: snapshot →
       diff → cleanup (C's module) → history entry → save new manifest. Depends on A1–A4 + C1.
       ✓ two consecutive runs on the demo tree produce sane day-1/day-2 entries.
+- [ ] **A7 · pending code-sync state** — in the orchestrator: when the diff shows scripts-zone
+      changes and a git repo is detected (helper from B6), add a "pending code sync" block (file
+      list) to the history entry and expose it in the `status` payload. Never pushes itself.
+      Depends on A6 + B6. ✓ headless maintain on a repo with edited scripts records the block
+      and leaves git state untouched.
 
 ### Worker B — CLI, setup flow, skill packaging
 
@@ -155,6 +182,14 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
       `0 7 * * * python3 <abs>/undhd.py maintain --root <R> >> ~/.undhd/cron.log 2>&1` to the
       user's crontab (idempotent — never duplicates the line). ✓ install → skill loads; second
       run changes nothing.
+- [ ] **B6 · gitsync.py + sync-code command** — helper to detect the repo containing the scripts
+      zone; build a commit message from the day's diff; commit **only scripts-zone paths**; push
+      to `git.remote`. `--dry-run` prints the plan; clear errors when there is no repo or remote.
+      ✓ on a scratch repo with a local bare remote: dry-run touches nothing, `--yes` lands the push.
+- [ ] **B7 · SKILL.md approval flow** — extend B3: when `maintain`/`status` reports pending code
+      changes, show the file list, ask the user for an explicit OK, and only then run
+      `sync-code --yes`; a "no" leaves everything pending for next time.
+      ✓ walkthrough on a scratch repo: decline → no push; accept → push.
 
 ### Worker C — Cleanup engine, tests, demo
 
@@ -170,9 +205,13 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
       ✓ `pytest -q` green; this gates the MVP.
 - [ ] **C4 · demo/make_demo.sh** — generate a fake bioinformatics workdir: `raw/*.fastq.gz`
       stubs, `scripts/align.sh`, `results/` outputs, scattered junk (`.DS_Store`, `tmp_*`,
-      stray files in root), with backdated mtimes so archive/rotate rules fire on day one.
+      stray files in root), with backdated mtimes so archive/rotate rules fire on day one;
+      `git init` it with a local bare "remote" so the code-sync beat has something to push to.
       ✓ one command yields a convincingly messy directory.
 - [ ] **C5 · README + demo script** — install steps and a timed 5-minute walkthrough (see §5).
+- [ ] **C6 · gitsync tests** — tmp_path fixture with a scratch repo + local bare remote: `ask`
+      mode never pushes from maintain; `sync-code --yes` pushes exactly the scripts-zone changes;
+      dry-run is side-effect-free; graceful behavior with no repo/remote. ✓ part of `pytest -q`.
 
 ---
 
@@ -183,12 +222,13 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
 | Hour 0–1 | All: read this file, agree schemas are final. B lands **B1** scaffold; A and C branch off it. |
 | Phase 1 (parallel) | A1–A4 · B2–B3 · C1–C2 |
 | **Checkpoint 1** | Wire `maintain` end-to-end (A6). Run on a scratch dir together. |
-| Phase 2 (parallel) | A5 · B4–B5 · C3–C4 |
-| **Checkpoint 2** | `pytest` green; full demo dry-run from `make_demo.sh` through two simulated days. |
+| Phase 2 (parallel) | A5, A7 · B4–B7 · C3–C4, C6 |
+| **Checkpoint 2** | `pytest` green; full demo dry-run from `make_demo.sh` through two simulated days, including the code-sync approve → push beat. |
 | Final | C5 polish, rehearse demo, tag `v0.1`. |
 
 **MVP line:** setup + maintain (history log + trash-pass cleanup) + status + demo dir.
-Archive/rotate (C2), warnings (A5), and cron install (B5) are the first things to drop if time runs short.
+Archive/rotate (C2), warnings (A5), and cron install (B5) are the first things to drop if time
+runs short. Code sync (B6–B7, A7, C6) is a headline feature — cut it only as a last resort.
 
 ---
 
@@ -200,8 +240,10 @@ Archive/rotate (C2), warnings (A5), and cron install (B5) are the first things t
 3. Simulate a workday: run the fake pipeline, scatter temp junk.
 4. `undhd.py maintain` → show the daily history entry (per-zone diff, actions, warnings) and the
    cleaned tree; junk is in trash, not gone.
-5. Simulate day 2 → maintain again → `status` shows the trend. Close on the crontab line:
-   "and from here it runs itself every morning."
+5. Simulate day 2 — this time also edit `scripts/align.sh` → maintain flags **pending code
+   changes** → Claude shows the changed files and asks for an OK → approve → `sync-code` commits
+   and pushes (show the commit landing on the demo's bare remote) → `status` shows the trend.
+   Close on the crontab line: "and from here it runs itself every morning."
 
 ---
 
@@ -210,7 +252,8 @@ Archive/rotate (C2), warnings (A5), and cron install (B5) are the first things t
 - Registry (`~/.undhd/registry.json`) + `maintain --all` for multiple managed dirs.
 - Pipeline runner: maintenance optionally *executes* the registered work scripts.
 - HTML status artifact with directory-size trend chart.
-- Auto-commit history entries when the workdir is a git repo.
+- Auto-commit the `.undhd/history/` log files themselves when the workdir is a git repo
+  (distinct from code sync, which is core — see B6).
 - "Monthly review": Claude reads a month of history and suggests reorganization.
 
 ## 7. Design defaults chosen (flag if you disagree)
@@ -220,3 +263,6 @@ Archive/rotate (C2), warnings (A5), and cron install (B5) are the first things t
 2. **Single managed dir** per config for MVP; multi-dir registry is stretch.
 3. Files ≥ 50 MB are tracked by size+mtime only (no hashing) — hackathon laptops vs. FASTQ files.
 4. Skill installs to `~/.claude/skills/` (personal) via symlink, so repo edits are live instantly.
+5. Code sync covers the **scripts zone only** and defaults to `ask`: cron runs surface pending
+   changes but never push; the push happens through the interactive approval flow, with `auto`
+   as an explicit per-directory opt-in.
