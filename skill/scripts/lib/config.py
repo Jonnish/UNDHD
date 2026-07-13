@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List
 
 UNDHD_DIR = ".undhd"
@@ -56,8 +57,22 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def _posix_seps(z: str) -> str:
+    """Backslash-authored zone paths (Windows habit) must match POSIX relpaths."""
+    return z.replace("\\", "/")
+
+
 def _norm_zone(z: str) -> str:
-    return z.strip().strip("/")
+    return _posix_seps(z).strip().strip("/")
+
+
+# Windows absolute paths (drive letter or UNC) must be rejected on every host OS,
+# not just on Windows — os.path.isabs("C:\\x") is False on POSIX (fix-brief bug 3).
+_WIN_ABS_RE = re.compile(r"^([a-zA-Z]:[\\/]|\\\\|//)")
+
+
+def _is_abs_anywhere(z: str) -> bool:
+    return os.path.isabs(z) or os.path.isabs(_posix_seps(z)) or bool(_WIN_ABS_RE.match(z))
 
 
 @dataclass
@@ -160,7 +175,14 @@ class Config:
         inputs = zones_raw["input"]
         if isinstance(inputs, str):  # tolerate a single string for input
             inputs = [inputs]
-        zones = Zones(input=list(inputs), scripts=zones_raw["scripts"], output=zones_raw["output"])
+        # Normalize separators once at load time so a backslash-authored config
+        # becomes consistent on disk after the next save (fix-brief bug 2).
+        # Trailing slashes are kept as written — the frozen schema example uses them.
+        zones = Zones(
+            input=[_posix_seps(z) if isinstance(z, str) else z for z in inputs],
+            scripts=_posix_seps(zones_raw["scripts"]) if isinstance(zones_raw["scripts"], str) else zones_raw["scripts"],
+            output=_posix_seps(zones_raw["output"]) if isinstance(zones_raw["output"], str) else zones_raw["output"],
+        )
 
         cleanup_raw = data.get("cleanup", {})
         cleanup = CleanupSettings(
@@ -200,7 +222,7 @@ class Config:
         for label, z in zone_fields:
             if not isinstance(z, str) or not _norm_zone(z):
                 problems.append("%s must be a non-empty relative path" % label)
-            elif os.path.isabs(z) or ".." in Path(z).parts:
+            elif _is_abs_anywhere(z) or ".." in PurePosixPath(_posix_seps(z)).parts:
                 problems.append("%s must be a relative path inside the workdir (got %r)" % (label, z))
 
         if self.cleanup.policy not in POLICIES:
