@@ -1,8 +1,9 @@
 """A3 — diff two manifests into added/removed/modified, aggregated per zone.
 
-Modification rule: identical size+mtime means unchanged; otherwise, when both
-sides have a sha256, the hashes decide (so a bare `touch` is not a modification);
-without hashes (>= 50 MB files) any size/mtime change counts as modified.
+Modification rule: when both sides have a sha256, the hashes alone decide — a
+same-size rewrite with a restored mtime is still modified, and a bare `touch`
+is not. Size+mtime is only trusted when a hash is missing on either side
+(>= 50 MB files, or an entry that predates hashing).
 """
 from __future__ import annotations
 
@@ -53,11 +54,12 @@ class DiffResult:
 
 
 def _same(old: Dict[str, Any], new: Dict[str, Any]) -> bool:
-    if old["size"] == new["size"] and old["mtime"] == new["mtime"]:
-        return True
-    if old.get("sha256") and new.get("sha256"):
+    # Hashes are authoritative whenever both sides have one: checking size+mtime
+    # first would wave through a same-length rewrite whose mtime was restored
+    # with os.utime (fix-brief bug 1 — tamper evasion on input files).
+    if old.get("sha256") is not None and new.get("sha256") is not None:
         return old["sha256"] == new["sha256"]
-    return False
+    return old["size"] == new["size"] and old["mtime"] == new["mtime"]
 
 
 def diff_manifests(
