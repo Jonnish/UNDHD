@@ -143,7 +143,7 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
 
 ### Worker A — Core engine (state, snapshot, diff, history)
 
-- [ ] **A1 · config.py** — dataclass + `load/save/validate` for `config.json`; clear errors on
+- [x] **A1 · config.py** — dataclass + `load/save/validate` for `config.json`; clear errors on
       missing zones or bad policy. ✓ round-trips the example schema above.
 - [ ] **A2 · snapshot.py** — walk the tree (skip `.undhd/`), build manifest per schema; hash only
       files < 50 MB; `save/load` manifest.json. ✓ snapshotting twice with no changes is identical.
