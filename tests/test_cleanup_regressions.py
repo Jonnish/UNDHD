@@ -119,7 +119,6 @@ def test_archive_skips_symlink(tmp_path: Path) -> None:
     assert not any(action["action"] == "archive" for action in actions)
 
 
-@pytest.mark.xfail(reason="owned by Worker A: hashes must win over identical size+mtime", strict=False)
 def test_tamper_evasion_is_detected_by_diff(tmp_path: Path) -> None:
     input_file = tmp_path / "raw" / "sample.fastq"
     input_file.parent.mkdir()
@@ -135,7 +134,6 @@ def test_tamper_evasion_is_detected_by_diff(tmp_path: Path) -> None:
     assert [change.path for change in diff.modified] == ["raw/sample.fastq"]
 
 
-@pytest.mark.xfail(reason="owned by Worker A: Zones must normalize backslashes", strict=False)
 def test_backslash_zone_path_classifies_posix_path() -> None:
     zones = Zones(input=[r"raw\subdir"], scripts=r"code\pipeline", output=r"results\final")
 

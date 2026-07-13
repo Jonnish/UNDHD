@@ -14,7 +14,9 @@ a concurrent invocation fails fast with a clear message.
 
 Cleanup seam (C1 contract): `cleanup.run_cleanup(root, config, dry_run=False)
 -> List[str]` returning one human-readable line per action (planned action when
-dry_run). Until the module exists, maintenance skips cleanup and says so.
+dry_run). Until the module exists, maintenance skips cleanup and says so. We
+pass `take_lock=False`: this orchestrator already holds `.undhd/.lock`, and
+cleanup's own locking (for direct library calls) would collide with it.
 
 Code-sync state (A7): when `git.sync_code` != "off" and the scripts zone lives
 in a git repo that has the configured remote, uncommitted changes under the
@@ -72,7 +74,7 @@ def _release_lock(lock: Path) -> None:
 def _run_cleanup(root: Path, config: Config, dry_run: bool):
     if _cleanup is None or not hasattr(_cleanup, "run_cleanup"):
         return [CLEANUP_UNAVAILABLE_NOTE], False
-    return list(_cleanup.run_cleanup(root, config, dry_run=dry_run)), True
+    return list(_cleanup.run_cleanup(root, config, dry_run=dry_run, take_lock=False)), True
 
 
 def pending_code_sync(root: Path, config: Config) -> List[str]:

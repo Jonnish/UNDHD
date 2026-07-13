@@ -7,7 +7,7 @@ import gzip
 import os
 import shutil
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -303,18 +303,22 @@ def run_cleanup(
     config: Any,
     dry_run: bool = False,
     now: datetime | None = None,
+    take_lock: bool = True,
 ) -> list[CleanupAction]:
     """Run all cleanup passes and return actions suitable for history rendering.
 
     ``config`` may be the JSON-like mapping from TODO.md or Worker A's dataclass.
     Supplying ``now`` makes age-sensitive behavior deterministic in tests.
+    ``take_lock=False`` is for callers that already hold ``.undhd/.lock`` —
+    the maintenance orchestrator serializes the whole pass and would otherwise
+    collide with our own lock here.
     """
 
     root_path = Path(root).expanduser().resolve()
     if not root_path.is_dir():
         raise ValueError(f"managed root is not a directory: {root_path}")
     current = now or datetime.now()
-    with cleanup_lock(root_path):
+    with cleanup_lock(root_path) if take_lock else nullcontext():
         actions: list[CleanupAction] = []
         actions.extend(_trash_pass(root_path, config, current.date(), dry_run))
         actions.extend(_rotate_logs(root_path, config, current, dry_run))
