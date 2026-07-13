@@ -1,4 +1,4 @@
-"""A6 — daily maintenance orchestrator and Day-0 state initialization.
+"""A6/A7 — daily maintenance orchestrator and Day-0 state initialization.
 
 Pipeline: acquire lock → snapshot → diff vs. previous manifest → cleanup
 (Worker C's module, via a guarded import so this also runs without it) →
@@ -16,6 +16,13 @@ Cleanup seam (C1 contract): `cleanup.run_cleanup(root, config, dry_run=False)
 -> List[str]` returning one human-readable line per action (planned action when
 dry_run). Until the module exists, maintenance skips cleanup and says so.
 
+Code-sync state (A7): when `git.sync_code` != "off" and the scripts zone lives
+in a git repo that has the configured remote, uncommitted changes under the
+zone are listed in the history entry and in the summary as `pending_sync`.
+Detection is read-only and persists across days until the user approves — the
+actual commit+push only ever happens through `sync-code` (B6). A failing git
+call downgrades to a warning instead of breaking the cron run.
+
 `dry_run=True` writes nothing — no history entry, no manifest, no cleanup
 moves — apart from the transient lock file; the rendered entry is returned in
 the summary as `entry_preview`.
@@ -24,9 +31,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from . import checks, history
+from . import checks, gitsync, history
 from .config import Config, UndhdError, undhd_dir
 from .diffs import diff_manifests
 from .snapshot import load_manifest, save_manifest, take_snapshot
@@ -68,6 +75,24 @@ def _run_cleanup(root: Path, config: Config, dry_run: bool):
     return list(_cleanup.run_cleanup(root, config, dry_run=dry_run)), True
 
 
+def pending_code_sync(root: Path, config: Config) -> List[str]:
+    """A7 — files with uncommitted changes under the scripts zone, repo-relative.
+
+    Read-only: never stages, commits, or pushes. Returns [] when sync is "off",
+    the scripts zone is not inside a git repo, or the configured remote is
+    missing (those are configurations, not errors). Git failures propagate as
+    UndhdError/OSError for the caller to downgrade.
+    """
+    if config.git.sync_code == "off":
+        return []
+    scripts_dir = Path(root) / config.zones.scripts
+    repo = gitsync.find_repo(scripts_dir)
+    if repo is None or not gitsync.has_remote(repo, config.git.remote):
+        return []
+    scripts_rel = scripts_dir.resolve().relative_to(repo.resolve()).as_posix()
+    return gitsync.dirty_scripts_files(repo, scripts_rel)
+
+
 def initialize_state(root: Path, config: Config) -> Dict[str, Any]:
     """Day 0 (called by setup, B2): baseline snapshot + manifest + history entry.
 
@@ -107,10 +132,17 @@ def _run_locked(root: Path, config: Config, dry_run: bool) -> Dict[str, Any]:
 
     warnings = checks.compute_warnings(diff, post, config)
 
+    try:
+        pending = pending_code_sync(root, config)
+    except (UndhdError, OSError, ValueError) as exc:
+        pending = []
+        warnings = warnings + ["Code-sync check failed: %s" % exc]
+
     body = history.render_maintenance_body(
         diff,
         cleanup_actions=actions,
         warnings=warnings,
+        pending_sync=pending,
         baseline=baseline,
         dry_run=dry_run,
     )
@@ -125,6 +157,7 @@ def _run_locked(root: Path, config: Config, dry_run: bool) -> Dict[str, Any]:
         "cleanup_actions": actions,
         "cleanup_ran": cleanup_ran,
         "warnings": warnings,
+        "pending_sync": pending,
     }
 
     if dry_run:

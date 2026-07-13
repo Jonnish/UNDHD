@@ -15,7 +15,7 @@ from lib import gitsync, history
 from lib.checks import compute_warnings
 from lib.config import Config, GitSettings, POLICIES, UndhdError, Zones, config_path, default_cleanup
 from lib.diffs import diff_manifests
-from lib.maintenance import initialize_state, run_maintenance
+from lib.maintenance import initialize_state, pending_code_sync, run_maintenance
 from lib.snapshot import load_manifest, take_snapshot, total_size
 
 
@@ -121,6 +121,11 @@ def cmd_maintain(args: argparse.Namespace) -> int:
         print("  cleanup: %s" % action)
     for warning in summary["warnings"]:
         print("  warning: %s" % warning)
+    pending = summary.get("pending_sync") or []
+    if pending:
+        print("  pending code sync (%d file(s) — approve, then `sync-code --yes`):" % len(pending))
+        for path in pending:
+            print("    - %s" % path)
 
     if summary["dry_run"]:
         print("\n--- entry preview ---")
@@ -176,6 +181,16 @@ def cmd_status(args: argparse.Namespace) -> int:
         % (len(diff.added), len(diff.removed), len(diff.modified))
     )
     print("  trash:   %s" % history.human_size(trash_size))
+    try:
+        pending = pending_code_sync(root, cfg)
+    except (UndhdError, OSError, ValueError):
+        pending = []
+    if pending:
+        print("  pending code sync (approve, then `sync-code --yes`):")
+        for path in pending:
+            print("    - %s" % path)
+    else:
+        print("  pending code sync: none")
     if warnings:
         print("  warnings:")
         for w in warnings:

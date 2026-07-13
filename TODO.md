@@ -159,7 +159,7 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
 - [x] **A6 · maintenance orchestrator** — `run_maintenance(root, dry_run)` in lib: snapshot →
       diff → cleanup (C's module) → history entry → save new manifest. Depends on A1–A4 + C1.
       ✓ two consecutive runs on the demo tree produce sane day-1/day-2 entries.
-- [ ] **A7 · pending code-sync state** — in the orchestrator: when the diff shows scripts-zone
+- [x] **A7 · pending code-sync state** — in the orchestrator: when the diff shows scripts-zone
       changes and a git repo is detected (helper from B6), add a "pending code sync" block (file
       list) to the history entry and expose it in the `status` payload. Never pushes itself.
       Depends on A6 + B6. ✓ headless maintain on a repo with edited scripts records the block

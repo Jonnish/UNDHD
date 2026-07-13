@@ -1,13 +1,14 @@
-"""run_maintenance hardening: the concurrency lock and the invariant that
-warnings reflect the post-cleanup state (a file trashed in this run must not
-also fire a stray-file warning in the same entry)."""
+"""run_maintenance hardening (lock, post-cleanup warning state) and A7:
+pending code-sync detection that records but never touches git."""
 
 from __future__ import annotations
+
+import subprocess
 
 import pytest
 
 from lib.config import Config, UndhdError, Zones, default_cleanup
-from lib.maintenance import initialize_state, run_maintenance
+from lib.maintenance import initialize_state, pending_code_sync, run_maintenance
 
 
 def managed_dir(tmp_path):
@@ -65,3 +66,65 @@ def test_dry_run_writes_nothing(tmp_path):
     assert "entry_preview" in summary
     assert (root / ".DS_Store").exists()  # cleanup planned, not performed
     assert [p.read_bytes() for p in sorted((root / ".undhd" / "history").glob("*.md"))] == before
+
+
+# -- A7: pending code sync ----------------------------------------------------
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
+
+
+def _git_out(cwd, *args):
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True
+    ).stdout
+
+
+def git_managed_dir(tmp_path):
+    root, cfg = managed_dir(tmp_path)
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "--quiet", str(bare)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "--quiet", str(root)], check=True, capture_output=True)
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    _git(root, "remote", "add", "origin", str(bare))
+    _git(root, "add", "-A")
+    _git(root, "commit", "--quiet", "-m", "init")
+    return root, cfg
+
+
+def test_maintain_records_pending_sync_and_leaves_git_untouched(tmp_path):
+    root, _ = git_managed_dir(tmp_path)
+    (root / "scripts" / "run.sh").write_text("echo changed\n")
+    head_before = _git_out(root, "rev-parse", "HEAD")
+
+    summary = run_maintenance(root)
+
+    assert summary["pending_sync"] == ["scripts/run.sh"]
+    entry_text = (root / ".undhd" / "history").glob("*.md").__next__().read_text()
+    assert "Pending code sync" in entry_text and "scripts/run.sh" in entry_text
+    # never pushes, never commits, never stages
+    assert _git_out(root, "rev-parse", "HEAD") == head_before
+    assert " M scripts/run.sh" in _git_out(root, "status", "--porcelain")
+    # ... and stays pending on later runs until approved (B7's "no" path)
+    assert run_maintenance(root)["pending_sync"] == ["scripts/run.sh"]
+
+
+def test_pending_sync_empty_when_disabled_or_unconfigured(tmp_path):
+    root, cfg = git_managed_dir(tmp_path)
+    (root / "scripts" / "run.sh").write_text("echo changed\n")
+
+    cfg.git.sync_code = "off"
+    assert pending_code_sync(root, cfg) == []
+
+    cfg.git.sync_code = "ask"
+    _git(root, "remote", "rename", "origin", "elsewhere")
+    assert pending_code_sync(root, cfg) == []  # configured remote missing
+
+
+def test_pending_sync_empty_outside_a_repo(tmp_path):
+    root, cfg = managed_dir(tmp_path)
+    (root / "scripts" / "run.sh").write_text("echo changed\n")
+    assert pending_code_sync(root, cfg) == []
+    assert run_maintenance(root)["pending_sync"] == []
