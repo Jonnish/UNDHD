@@ -7,12 +7,16 @@ import gzip
 import os
 import shutil
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from .config import UndhdError
+
 
 UNIVERSAL_TEMP_PATTERNS = {".DS_Store"}
+LOCK_NAME = ".lock"
 
 
 class CleanupAction(str):
@@ -54,7 +58,7 @@ def _value(value: Any, key: str, default: Any = None) -> Any:
 
 
 def _normalise_relative(path: str | Path) -> Path:
-    relative = Path(path)
+    relative = Path(str(path).replace("\\", "/"))
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError(f"zone paths must be relative to the managed root: {path}")
     return relative
@@ -74,6 +78,51 @@ def _is_within(path: Path, directory: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _zone_of(root: Path, path: Path, config: Any) -> str:
+    """Classify through Config.zones when available, with mapping compatibility."""
+    zones = _value(config, "zones", {})
+    relative = path.relative_to(root).as_posix()
+    classifier = getattr(zones, "zone_of", None)
+    if callable(classifier):
+        return classifier(relative)
+    inputs, scripts, output = _zone_paths(root, config)
+    if any(_is_within(path, zone) for zone in inputs):
+        return "input"
+    if _is_within(path, scripts):
+        return "scripts"
+    if _is_within(path, output):
+        return "output"
+    return "other"
+
+
+@contextmanager
+def cleanup_lock(root: str | Path):
+    """Serialize cleanup passes using an atomic lock inside existing state."""
+    root_path = Path(root)
+    state_dir = root_path / ".undhd"
+    if not state_dir.is_dir():
+        # Direct library use on an unmanaged scratch tree remains supported.
+        yield
+        return
+    lock_path = state_dir / LOCK_NAME
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as error:
+        raise UndhdError("another unDHD run is already in progress") from error
+    try:
+        os.write(descriptor, ("%d\n" % os.getpid()).encode("ascii"))
+        os.close(descriptor)
+        descriptor = None
+        yield
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -116,13 +165,11 @@ def _trash_pass(
     config: Any,
     trash_day: date,
     dry_run: bool,
-) -> list[dict[str, str]]:
+) -> list[CleanupAction]:
     cleanup_config = _value(config, "cleanup", {})
     patterns = list(_value(cleanup_config, "temp_patterns", []))
-    inputs, scripts, _ = _zone_paths(root, config)
-    protected = inputs + [scripts]
     trash_root = root / ".undhd" / "trash" / trash_day.isoformat()
-    actions: list[dict[str, str]] = []
+    actions: list[CleanupAction] = []
 
     # topdown lets us prune a matching directory after planning one move.
     for current, directories, files in os.walk(root, topdown=True):
@@ -136,7 +183,7 @@ def _trash_pass(
             source = current_path / name
             if not _matches(source, patterns):
                 continue
-            in_protected_zone = any(_is_within(source, zone) for zone in protected)
+            in_protected_zone = _zone_of(root, source, config) in ("input", "scripts")
             if in_protected_zone and not _matches(source, list(UNIVERSAL_TEMP_PATTERNS)):
                 continue
             destination = _collision_free(trash_root / source.relative_to(root))
@@ -150,7 +197,7 @@ def _trash_pass(
             source = current_path / name
             if not _matches(source, patterns):
                 continue
-            in_protected_zone = any(_is_within(source, zone) for zone in protected)
+            in_protected_zone = _zone_of(root, source, config) in ("input", "scripts")
             if in_protected_zone and not _matches(source, list(UNIVERSAL_TEMP_PATTERNS)):
                 continue
             destination = _collision_free(trash_root / source.relative_to(root))
@@ -166,18 +213,16 @@ def _old_enough(path: Path, now: datetime, days: int) -> bool:
     return now.timestamp() - path.stat().st_mtime >= days * 86_400
 
 
-def _rotate_logs(root: Path, config: Any, now: datetime, dry_run: bool) -> list[dict[str, str]]:
+def _rotate_logs(root: Path, config: Any, now: datetime, dry_run: bool) -> list[CleanupAction]:
     cleanup_config = _value(config, "cleanup", {})
     after_days = int(_value(cleanup_config, "log_gzip_after_days", 7))
     temp_patterns = list(_value(cleanup_config, "temp_patterns", []))
-    inputs, scripts, _ = _zone_paths(root, config)
-    protected = inputs + [scripts]
-    actions: list[dict[str, str]] = []
+    actions: list[CleanupAction] = []
 
     for source in sorted(root.rglob("*.log")):
-        if _is_within(source, root / ".undhd") or any(
-            _is_within(source, zone) for zone in protected
-        ):
+        if source.is_symlink() or _is_within(source, root / ".undhd"):
+            continue
+        if _zone_of(root, source, config) in ("input", "scripts"):
             continue
         if _has_matching_component(source, root, temp_patterns):
             continue
@@ -201,17 +246,19 @@ def _rotate_logs(root: Path, config: Any, now: datetime, dry_run: bool) -> list[
     return actions
 
 
-def _archive_outputs(root: Path, config: Any, now: datetime, dry_run: bool) -> list[dict[str, str]]:
+def _archive_outputs(root: Path, config: Any, now: datetime, dry_run: bool) -> list[CleanupAction]:
     cleanup_config = _value(config, "cleanup", {})
     after_days = int(_value(cleanup_config, "archive_output_after_days", 14))
     temp_patterns = list(_value(cleanup_config, "temp_patterns", []))
     _, _, output = _zone_paths(root, config)
     archive_root = output / "archive"
-    actions: list[dict[str, str]] = []
-    if not output.exists():
+    actions: list[CleanupAction] = []
+    if after_days == 0 or not output.exists():
         return actions
 
     for source in sorted(path for path in output.rglob("*") if path.is_file()):
+        if source.is_symlink() or _zone_of(root, source, config) != "output":
+            continue
         if _is_within(source, archive_root) or not _old_enough(source, now, after_days):
             continue
         if source.name.endswith((".log", ".log.gz")):
@@ -228,11 +275,11 @@ def _archive_outputs(root: Path, config: Any, now: datetime, dry_run: bool) -> l
     return actions
 
 
-def _purge_trash(root: Path, config: Any, today: date, dry_run: bool) -> list[dict[str, str]]:
+def _purge_trash(root: Path, config: Any, today: date, dry_run: bool) -> list[CleanupAction]:
     cleanup_config = _value(config, "cleanup", {})
     retention_days = int(_value(cleanup_config, "trash_retention_days", 7))
     trash_root = root / ".undhd" / "trash"
-    actions: list[dict[str, str]] = []
+    actions: list[CleanupAction] = []
     if not trash_root.exists():
         return actions
 
@@ -256,7 +303,7 @@ def run_cleanup(
     config: Any,
     dry_run: bool = False,
     now: datetime | None = None,
-) -> list[dict[str, str]]:
+) -> list[CleanupAction]:
     """Run all cleanup passes and return actions suitable for history rendering.
 
     ``config`` may be the JSON-like mapping from TODO.md or Worker A's dataclass.
@@ -267,12 +314,13 @@ def run_cleanup(
     if not root_path.is_dir():
         raise ValueError(f"managed root is not a directory: {root_path}")
     current = now or datetime.now()
-    actions: list[dict[str, str]] = []
-    actions.extend(_trash_pass(root_path, config, current.date(), dry_run))
-    actions.extend(_rotate_logs(root_path, config, current, dry_run))
-    actions.extend(_archive_outputs(root_path, config, current, dry_run))
-    actions.extend(_purge_trash(root_path, config, current.date(), dry_run))
-    return actions
+    with cleanup_lock(root_path):
+        actions: list[CleanupAction] = []
+        actions.extend(_trash_pass(root_path, config, current.date(), dry_run))
+        actions.extend(_rotate_logs(root_path, config, current, dry_run))
+        actions.extend(_archive_outputs(root_path, config, current, dry_run))
+        actions.extend(_purge_trash(root_path, config, current.date(), dry_run))
+        return actions
 
 
 # Compatibility names for the maintenance orchestrator while tracks integrate.
@@ -280,4 +328,4 @@ cleanup = run_cleanup
 perform_cleanup = run_cleanup
 
 
-__all__ = ["cleanup", "perform_cleanup", "run_cleanup"]
+__all__ = ["cleanup", "cleanup_lock", "perform_cleanup", "run_cleanup"]
