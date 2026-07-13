@@ -57,7 +57,8 @@ undhd/
 │           ├── config.py    # load/save/validate .undhd/config.json
 │           ├── snapshot.py  # walk tree → manifest
 │           ├── diffs.py     # manifest diff → added/removed/modified per zone
-│           ├── history.py   # render daily history entries + warnings
+│           ├── history.py   # render + read daily history entries
+│           ├── checks.py    # warning checks: large files, input-zone changes, strays
 │           ├── cleanup.py   # trash / archive / rotate / purge
 │           └── gitsync.py   # detect code changes; commit + push after user OK
 ├── tests/                   # pytest, tmp_path-based
@@ -152,7 +153,7 @@ schemas in this file — don't wait on other tracks; integrate at the checkpoint
 - [x] **A4 · history.py** — render a diff + cleanup report into `history/YYYY-MM-DD.md`; second
       run same day appends a new section; special "Day 0 — initialized" entry for setup.
       ✓ file is valid markdown with per-zone tables.
-- [ ] **A5 · warnings** — flag in the history entry: new files > `large_file_warn_mb`, any change
+- [x] **A5 · warnings** — flag in the history entry: new files > `large_file_warn_mb`, any change
       inside an input zone, stray files in the workdir root. ✓ each fires in a crafted tree.
 - [ ] **A6 · maintenance orchestrator** — `run_maintenance(root, dry_run)` in lib: snapshot →
       diff → cleanup (C's module) → history entry → save new manifest. Depends on A1–A4 + C1.
